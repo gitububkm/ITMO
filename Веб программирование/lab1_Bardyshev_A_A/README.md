@@ -1,166 +1,364 @@
-# Lab 1 — CRUD API для новостного портала (FastAPI + SQLAlchemy + Alembic)
+# lab1_Bardyshev_A_A
 
-`lab1_Bardyshev_A_A`
-
-## Цели
-Реализовать CRUD API с тремя сущностями:
-- **User** — имя, email (уникальный), дата регистрации, флаг «верифицирован как автор», аватар;
-- **News** — заголовок, JSON‑контент, дата публикации, автор, обложка;
-- **Comment** — текст, ссылка на новость и автора, дата публикации.
-
-Ограничение: создавать новости могут **только верифицированные пользователи**.
-
-## Архитектура (слои) и проектирование
-- `app/models` — ORM‑модели SQLAlchemy;
-- `app/schemas` — Pydantic‑схемы запросов/ответов;
-- `app/repositories/sqlalchemy` — слой доступа к данным (CRUD);
-- `app/services` — бизнес‑логика (валидации, ограничения);
-- `app/api/v1` — HTTP‑ручки FastAPI;
-- `alembic` — миграции (создание схемы + сиды мок‑данных).
-
-Такое разделение позволяет в будущем заменить БД (например, на MongoDB), не меняя бизнес‑логику и ручки (просто реализовать другой репозиторий).
+CRUD API для управления пользователями, новостями и комментариями, построенный на FastAPI, SQLAlchemy и PostgreSQL.
 
 
-## Требования и стек
-- Python **3.10+**
-- **FastAPI**, **SQLAlchemy 2 (async)**, **Alembic**
-- **PostgreSQL**
-- Минимальные зависимости (только для запуска API и подключения к БД).
+## Авторизация
 
-## Быстрый старт
-1. Скопируйте проект и создайте `.env` на основе шаблона:
-   ```bash
-   cp .env.example .env
-   ```
+Приложение теперь поддерживает:
+- **JWT токены** (access + refresh)
+- **GitHub OAuth**
+- **Ролевую модель** (USER, AUTHOR, ADMIN)
+- **Управление сессиями**
 
-2. Поднимите PostgreSQL (Docker):
-   ```bash
-   docker compose up -d
-   ```
+Подробная документация: **[docs/auth.md](docs/auth.md)**
 
-3. Установите зависимости и выполните миграции:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate        # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   alembic upgrade head
-   ```
+## Описание проекта
 
-4. Запустите приложение:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+API сервис предоставляет полный функционал CRUD операций для трех основных сущностей:
+- **Пользователи** - управление пользователями системы
+- **Новости** - публикация и управление новостями (доступно только верифицированным авторам)
+- **Комментарии** - комментирование новостей
 
-   Swagger UI: http://127.0.0.1:8000/docs
+## Модели данных
 
-## Сценарий использования (проверка через curl)
-> Предполагаем, что сервис запущен локально на `http://127.0.0.1:8000`.
+### User (Пользователь)
+- `id` - уникальный идентификатор
+- `name` - имя пользователя
+- `email` - email (уникальный)
+- `registration_date` - дата регистрации
+- `is_verified_author` - статус верификации как автора
+- `avatar` - URL аватарки
 
-1) Создать пользователей:
+### News (Новость)
+- `id` - уникальный идентификатор
+- `title` - заголовок новости
+- `content` - содержание в JSON формате
+- `publication_date` - дата публикации
+- `author_id` - ID автора (связь с User)
+- `cover` - URL обложки
+
+### Comment (Комментарий)
+- `id` - уникальный идентификатор
+- `text` - текст комментария
+- `news_id` - ID новости (связь с News)
+- `author_id` - ID автора (связь с User)
+- `publication_date` - дата публикации
+
+
+## Требования
+
+- Python 3.10+
+- PostgreSQL 12+
+
+## Установка и запуск
+
+### 1. Клонирование репозитория
+
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/users/ -H "Content-Type: application/json" -d '{
-  "name":"Alice","email":"alice@example.com","is_verified_author": true,"avatar_url":"https://pics.example/alice.png"
-}'
-curl -X POST http://127.0.0.1:8000/api/v1/users/ -H "Content-Type: application/json" -d '{
-  "name":"Bob","email":"bob@example.com","is_verified_author": false,"avatar_url":"https://pics.example/bob.png"
-}'
+git clone https://github.com/itmo-webdev/lab1_Bardyshev_A_A.git
+cd lab1_Bardyshev_A_A
 ```
 
-2) Создать новость (только от верифицированного автора `Alice`):
+### 2. Создание виртуального окружения
+
 ```bash
-# Подставьте фактический UUID Alice из ответа шага 1
-curl -X POST http://127.0.0.1:8000/api/v1/news/ -H "Content-Type: application/json" -d '{
-  "title":"Hello, FastAPI",
-  "content":{"body":"JSON контент новости","tags":["fastapi","crud"]},
-  "cover_image_url":"https://pics.example/cover1.jpg",
-  "author_id":"ALICE_UUID"
-}'
+python -m venv venv
 ```
 
-3) Создать комментарий к новости от другого пользователя:
+Активация:
+- Windows: `venv\Scripts\activate`
+- Linux/Mac: `source venv/bin/activate`
+
+### 3. Установка зависимостей
+
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/comments/ -H "Content-Type: application/json" -d '{
-  "text":"Отличная новость!",
-  "author_id":"BOB_UUID",
-  "news_id":"NEWS_UUID"
-}'
+pip install -r requirements.txt
 ```
 
-4) Изменить новость:
+### 4. Настройка базы данных
+
+
 ```bash
-curl -X PATCH http://127.0.0.1:8000/api/v1/news/NEWS_UUID -H "Content-Type: application/json" -d '{"title":"Hello, FastAPI (updated)"}'
+docker-compose up -d
 ```
 
-5) Изменить комментарий:
-```bash
-curl -X PATCH http://127.0.0.1:8000/api/v1/comments/COMMENT_UUID -H "Content-Type: application/json" -d '{"text":"Я передумал: просто супер!"}'
+Это запустит PostgreSQL на порту 5432 с настройками из docker-compose.yml.
+
+
+### 5. Настройка переменных окружения
+
+Скопируйте `.env.example` в `.env` и настройте подключение к БД:
+
+```env
+DATABASE_URL=postgresql://user:password@localhost:5432/news_db
 ```
 
-6) Удалить новость вместе с комментариями:
+### 6. Применение миграций
+
 ```bash
-curl -X DELETE http://127.0.0.1:8000/api/v1/news/NEWS_UUID
+alembic upgrade head
 ```
 
-### Другие полезные запросы
+Это создаст все таблицы и добавит моковые данные.
+
+### 7. Запуск приложения
+
 ```bash
-curl http://127.0.0.1:8000/api/v1/users/
-curl http://127.0.0.1:8000/api/v1/news/
-curl http://127.0.0.1:8000/api/v1/comments/
+python main.py
 ```
+
+Или через uvicorn напрямую:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Приложение будет доступно по адресу: http://localhost:8000
+
+API документация (Swagger): http://localhost:8000/docs
 
 ## Миграции
-- `0001_create_initial_tables.py` — создание таблиц `users`, `news`, `comments` (FK + ON DELETE CASCADE).
-- `0002_seed_mock_data.py` — мок‑данные (Alice — верифицированный автор, Bob — нет; новость и комментарий).
 
-Сбросить БД и накатить заново:
+### Структура миграций
+
+1. **001_initial_migration.py** - Создание таблиц для всех моделей
+2. **002_add_mock_data.py** - Добавление тестовых данных
+
+### Команды Alembic
+
 ```bash
-alembic downgrade base && alembic upgrade head
+alembic revision --autogenerate -m "описание миграции"
+alembic upgrade head
+alembic downgrade -1
+alembic current
+alembic history
 ```
 
-## Структура
-```text
-lab1_Bardyshev_A_A/
-├─ alembic/
-│  ├─ versions/
-│  │  ├─ 0001_create_initial_tables.py
-│  │  └─ 0002_seed_mock_data.py
-│  ├─ env.py
-│  ├─ README
-│  └─ script.py.mako
-├─ app/
-│  ├─ api/
-│  │  ├─ v1/
-│  │  │  ├─ users.py
-│  │  │  ├─ news.py
-│  │  │  └─ comments.py
-│  │  ├─ dependencies.py
-│  │  └─ router.py
-│  ├─ core/config.py
-│  ├─ db/session.py
-│  ├─ models/
-│  │  ├─ user.py
-│  │  ├─ news.py
-│  │  └─ comment.py
-│  ├─ repositories/
-│  │  └─ sqlalchemy/
-│  │     ├─ base.py
-│  │     ├─ user.py
-│  │     ├─ news.py
-│  │     └─ comment.py
-│  ├─ schemas/
-│  │  ├─ user.py
-│  │  ├─ news.py
-│  │  └─ comment.py
-│  ├─ services/
-│  │  ├─ base.py
-│  │  ├─ users.py
-│  │  ├─ news.py
-│  │  └─ comments.py
-│  └─ main.py
-├─ .env.example
-├─ alembic.ini
-├─ docker-compose.yml
-├─ requirements.txt
-└─ README.md
+## Примеры использования API
+
+### Пользователи
+
+#### Создание пользователя
+
+```bash
+curl -X POST "http://localhost:8000/users/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Бардышев Артём",
+    "email": "ububkmart@gmail.com",
+    "is_verified_author": true,
+    "avatar": "https://example.com/avatar.jpg"
+  }'
 ```
 
+Ответ:
+```json
+{
+  "id": 4,
+  "name": "Артём Бардышев",
+  "email": "ububkmart@gmail.com",
+  "registration_date": "2024-01-01T12:00:00",
+  "is_verified_author": true,
+  "avatar": "https://example.com/avatar.jpg"
+}
+```
+
+#### Получение всех пользователей
+
+```bash
+curl -X GET "http://localhost:8000/users/"
+```
+
+#### Получение пользователя по ID
+
+```bash
+curl -X GET "http://localhost:8000/users/1"
+```
+
+#### Обновление пользователя
+
+```bash
+curl -X PUT "http://localhost:8000/users/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Иван Иванович Иванов",
+    "is_verified_author": true
+  }'
+```
+
+#### Удаление пользователя
+
+```bash
+curl -X DELETE "http://localhost:8000/users/3"
+```
+
+### Новости
+
+#### Создание новости (только для верифицированных авторов)
+
+```bash
+curl -X POST "http://localhost:8000/news/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Новая технология в веб-разработке",
+    "content": {
+      "type": "article",
+      "body": "Описание новой технологии",
+      "tags": ["технологии", "веб"]
+    },
+    "author_id": 1,
+    "cover": "https://example.com/cover.jpg"
+  }'
+```
+
+Ответ:
+```json
+{
+  "id": 3,
+  "title": "Новая технология в веб-разработке",
+  "content": {
+    "type": "article",
+    "body": "Описание новой технологии",
+    "tags": ["технологии", "веб"]
+  },
+  "publication_date": "2024-01-01T12:00:00",
+  "author_id": 1,
+  "cover": "https://example.com/cover.jpg"
+}
+```
+
+#### Получение всех новостей
+
+```bash
+curl -X GET "http://localhost:8000/news/"
+```
+
+#### Получение новости по ID
+
+```bash
+curl -X GET "http://localhost:8000/news/1"
+```
+
+#### Обновление новости
+
+```bash
+curl -X PUT "http://localhost:8000/news/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обновленный заголовок",
+    "content": {
+      "type": "article",
+      "body": "Обновленное содержание"
+    }
+  }'
+```
+
+#### Удаление новости (удаляет все связанные комментарии)
+
+```bash
+curl -X DELETE "http://localhost:8000/news/1"
+```
+
+### Комментарии
+
+#### Создание комментария
+
+```bash
+curl -X POST "http://localhost:8000/comments/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Отличная статья!",
+    "news_id": 1,
+    "author_id": 2
+  }'
+```
+
+Ответ:
+```json
+{
+  "id": 4,
+  "text": "Отличная статья!",
+  "news_id": 1,
+  "author_id": 2,
+  "publication_date": "2024-01-01T12:00:00"
+}
+```
+
+#### Получение всех комментариев
+
+```bash
+curl -X GET "http://localhost:8000/comments/"
+```
+
+#### Получение комментариев к конкретной новости
+
+```bash
+curl -X GET "http://localhost:8000/comments/news/1"
+```
+
+#### Получение комментария по ID
+
+```bash
+curl -X GET "http://localhost:8000/comments/1"
+```
+
+#### Обновление комментария
+
+```bash
+curl -X PUT "http://localhost:8000/comments/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Обновленный текст комментария"
+  }'
+```
+
+#### Удаление комментария
+
+```bash
+curl -X DELETE "http://localhost:8000/comments/1"
+```
+
+## Сценарий использования
+
+### Полный тестовый сценарий
+
+```bash
+# 1. Создание пользователей
+curl -X POST "http://localhost:8000/users/" -H "Content-Type: application/json" \
+  -d '{"name": "Автор 1", "email": "author1@example.com", "is_verified_author": true}'
+
+curl -X POST "http://localhost:8000/users/" -H "Content-Type: application/json" \
+  -d '{"name": "Читатель 1", "email": "reader1@example.com", "is_verified_author": false}'
+
+# 2. Создание новости от верифицированного автора
+curl -X POST "http://localhost:8000/news/" -H "Content-Type: application/json" \
+  -d '{"title": "Тестовая новость", "content": {"body": "Содержание"}, "author_id": 1}'
+
+# 3. Создание комментария от другого пользователя
+curl -X POST "http://localhost:8000/comments/" -H "Content-Type: application/json" \
+  -d '{"text": "Интересная новость!", "news_id": 1, "author_id": 2}'
+
+# 4. Изменение новости
+curl -X PUT "http://localhost:8000/news/1" -H "Content-Type: application/json" \
+  -d '{"title": "Обновленная новость"}'
+
+# 5. Изменение комментария
+curl -X PUT "http://localhost:8000/comments/1" -H "Content-Type: application/json" \
+  -d '{"text": "Обновленный комментарий"}'
+
+# 6. Удаление новости вместе со всеми комментариями
+curl -X DELETE "http://localhost:8000/news/1"
+```
+
+## Тестирование
+
+Для тестирования всех эндпоинтов можно использовать:
+- Встроенный Swagger UI: http://localhost:8000/docs
+- ReDoc документацию: http://localhost:8000/redoc
+- Postman или аналогичные инструменты
+- curl команды (примеры выше)
+
+## Автор
+
+Бардышев А.А.
