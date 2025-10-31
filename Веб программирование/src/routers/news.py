@@ -1,6 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from src.database import get_db
 from src.schemas.news import NewsCreate, NewsUpdate, NewsResponse
 from src.services.news_service import NewsService
 from src.dependencies.auth import (
@@ -14,57 +12,59 @@ from typing import List
 
 router = APIRouter(prefix="/news", tags=["news"])
 
+from src.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+
+def get_news_service(db: AsyncSession = Depends(get_db)) -> NewsService:
+    return NewsService(db)
+
 @router.post("/", response_model=NewsResponse, status_code=201)
-def create_news(
+async def create_news(
     news: NewsCreate,
     current_user: User = Depends(get_current_verified_author),
-    db: Session = Depends(get_db)
+    service: NewsService = Depends(get_news_service)
 ):
     news.author_id = current_user.id
-    db_news = News(**news.model_dump())
-    db.add(db_news)
-    db.commit()
-    db.refresh(db_news)
-    return db_news
+    created = await service.create(news)
+    if not created:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return created
 
 @router.get("/", response_model=List[NewsResponse])
-def get_all_news(
+async def get_all_news(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_optional_current_user)
+    current_user: User = Depends(get_optional_current_user),
+    service: NewsService = Depends(get_news_service)
 ):
-    return NewsService.get_all_news(db, skip, limit)
+    return await service.list(skip, limit)
 
 @router.get("/{news_id}", response_model=NewsResponse)
-def get_news(
+async def get_news(
     news_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_optional_current_user)
+    current_user: User = Depends(get_optional_current_user),
+    service: NewsService = Depends(get_news_service)
 ):
-    news = NewsService.get_news(db, news_id)
+    news = await service.get(news_id)
     if not news:
         raise HTTPException(status_code=404, detail="News not found")
     return news
 
 @router.put("/{news_id}", response_model=NewsResponse)
-def update_news(
+async def update_news(
     news_update: NewsUpdate,
     news: News = Depends(get_news_with_permission),
-    db: Session = Depends(get_db)
+    service: NewsService = Depends(get_news_service)
 ):
-    update_data = news_update.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(news, field, value)
-    db.commit()
-    db.refresh(news)
-    return news
+    updated = await service.update(news.id, news_update)
+    if not updated:
+        raise HTTPException(status_code=404, detail="News not found")
+    return updated
 
 @router.delete("/{news_id}", status_code=204)
-def delete_news(
+async def delete_news(
     news: News = Depends(get_news_with_permission),
-    db: Session = Depends(get_db)
+    service: NewsService = Depends(get_news_service)
 ):
-    db.delete(news)
-    db.commit()
+    await service.delete(news.id)
 

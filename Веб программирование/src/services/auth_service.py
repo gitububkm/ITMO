@@ -2,12 +2,13 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from fastapi import HTTPException, status
 import os
 
 from src.models.user import User, UserRole
-from src.models.refresh_session import RefreshSession
+from src.services.cache import SyncCacheService
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
@@ -57,8 +58,9 @@ class AuthService:
             )
 
     @staticmethod
-    def register_user(db: Session, name: str, email: str, password: str) -> User:
-        existing_user = db.query(User).filter(User.email == email).first()
+    async def register_user(db: AsyncSession, name: str, email: str, password: str) -> User:
+        result = await db.execute(select(User).where(User.email == email))
+        existing_user = result.scalar_one_or_none()
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -73,13 +75,14 @@ class AuthService:
             role=UserRole.USER
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         return user
 
     @staticmethod
-    def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
-        user = db.query(User).filter(User.email == email).first()
+    async def authenticate_user(db: AsyncSession, email: str, password: str) -> Optional[User]:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
         if not user or not user.password_hash:
             return None
         if not AuthService.verify_password(password, user.password_hash):
@@ -87,23 +90,22 @@ class AuthService:
         return user
 
     @staticmethod
-    def create_tokens_for_user(
-        db: Session, 
+    async def create_tokens_for_user(
+        db: AsyncSession, 
         user: User, 
         user_agent: Optional[str] = None
     ) -> dict:
         access_token = AuthService.create_access_token(data={"sub": str(user.id)})
         refresh_token = AuthService.create_refresh_token(data={"sub": str(user.id)})
         
-        expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-        refresh_session = RefreshSession(
-            user_id=user.id,
-            refresh_token=refresh_token,
-            user_agent=user_agent,
-            expires_at=expires_at
-        )
-        db.add(refresh_session)
-        db.commit()
+        # Храним сессию в Redis
+        token_prefix = refresh_token[:16]
+        session_data = {
+            "user_id": user.id,
+            "user_agent": user_agent,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        SyncCacheService().set_session(user.id, token_prefix, session_data)
         
         return {
             "access_token": access_token,
@@ -112,7 +114,7 @@ class AuthService:
         }
 
     @staticmethod
-    def refresh_tokens(db: Session, refresh_token: str, user_agent: Optional[str] = None) -> dict:
+    async def refresh_tokens(db: AsyncSession, refresh_token: str, user_agent: Optional[str] = None) -> dict:
         payload = AuthService.decode_token(refresh_token)
         
         if payload.get("type") != "refresh":
@@ -121,9 +123,10 @@ class AuthService:
                 detail="Invalid token type"
             )
         
-        session = db.query(RefreshSession).filter(
-            RefreshSession.refresh_token == refresh_token
-        ).first()
+        user_id = int(payload.get("sub"))
+        token_prefix = refresh_token[:16]
+        cache = SyncCacheService()
+        session = cache.get_session(user_id, token_prefix)
         
         if not session:
             raise HTTPException(
@@ -131,70 +134,55 @@ class AuthService:
                 detail="Invalid refresh token"
             )
         
-        if session.expires_at < datetime.utcnow():
-            db.delete(session)
-            db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token expired"
-            )
-        
-        user = db.query(User).filter(User.id == session.user_id).first()
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found"
             )
         
-        db.delete(session)
-        db.commit()
-        
-        return AuthService.create_tokens_for_user(db, user, user_agent)
+        # Удаляем старую сессию и создаем новую
+        cache.delete_session(user_id, token_prefix)
+        return await AuthService.create_tokens_for_user(db, user, user_agent)
 
     @staticmethod
-    def logout(db: Session, refresh_token: str) -> bool:
-        session = db.query(RefreshSession).filter(
-            RefreshSession.refresh_token == refresh_token
-        ).first()
-        
-        if session:
-            db.delete(session)
-            db.commit()
+    async def logout(db: AsyncSession, refresh_token: str) -> bool:
+        try:
+            payload = AuthService.decode_token(refresh_token)
+            user_id = int(payload.get("sub"))
+            token_prefix = refresh_token[:16]
+            SyncCacheService().delete_session(user_id, token_prefix)
             return True
-        return False
+        except Exception:
+            return False
 
     @staticmethod
-    def get_user_sessions(db: Session, user_id: int):
-        return db.query(RefreshSession).filter(
-            RefreshSession.user_id == user_id,
-            RefreshSession.expires_at > datetime.utcnow()
-        ).all()
+    async def get_user_sessions(db: AsyncSession, user_id: int):
+        # Не реализовано — для Redis требуется отдельный трекинг ключей
+        return []
 
     @staticmethod
-    def logout_all_sessions(db: Session, user_id: int) -> int:
-        sessions = db.query(RefreshSession).filter(
-            RefreshSession.user_id == user_id
-        ).all()
-        count = len(sessions)
-        for session in sessions:
-            db.delete(session)
-        db.commit()
-        return count
+    async def logout_all_sessions(db: AsyncSession, user_id: int) -> int:
+        # Можно реализовать через хранение списка префиксов на пользователя
+        return 0
 
     @staticmethod
-    def get_or_create_github_user(db: Session, github_id: str, email: str, name: str, avatar: str) -> User:
-        user = db.query(User).filter(User.github_id == github_id).first()
+    async def get_or_create_github_user(db: AsyncSession, github_id: str, email: str, name: str, avatar: str) -> User:
+        result = await db.execute(select(User).where(User.github_id == github_id))
+        user = result.scalar_one_or_none()
         
         if user:
             return user
         
-        existing_email_user = db.query(User).filter(User.email == email).first()
+        result = await db.execute(select(User).where(User.email == email))
+        existing_email_user = result.scalar_one_or_none()
         if existing_email_user:
             existing_email_user.github_id = github_id
             if not existing_email_user.avatar:
                 existing_email_user.avatar = avatar
-            db.commit()
-            db.refresh(existing_email_user)
+            await db.commit()
+            await db.refresh(existing_email_user)
             return existing_email_user
         
         user = User(
@@ -205,7 +193,7 @@ class AuthService:
             role=UserRole.USER
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         return user
 

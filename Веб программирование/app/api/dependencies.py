@@ -10,8 +10,11 @@ from app.repositories.sqlalchemy.comment import CommentRepository
 from app.services.users import UserService
 from app.services.news import NewsService
 from app.services.comments import CommentService
+ 
 
 DBSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+
+ 
 
 def get_user_repo(session: DBSessionDep) -> UserRepository:
     return UserRepository(session)

@@ -20,7 +20,8 @@ class NewsService(BaseService):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="The user is not verified as an author and cannot post news",
             )
-        return await self.repository.create(news_data)
+        news = await self.repository.create(news_data)
+        return news
 
     async def update_news(self, news_id: uuid.UUID, news_data: NewsUpdate) -> News:
         news_to_update = await self.get_by_id(news_id)

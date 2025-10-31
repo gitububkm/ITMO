@@ -1,5 +1,12 @@
+import logging
 from fastapi import FastAPI
 from .api.router import api_router
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 app = FastAPI(title="News CRUD API")
 

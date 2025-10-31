@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 import os
 
@@ -28,12 +28,12 @@ github_sso = GithubSSO(
 )
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-def register(
+async def register(
     user_data: UserRegister,
     request: Request,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    user = AuthService.register_user(
+    user = await AuthService.register_user(
         db=db,
         name=user_data.name,
         email=user_data.email,
@@ -41,17 +41,17 @@ def register(
     )
     
     user_agent = request.headers.get("user-agent")
-    tokens = AuthService.create_tokens_for_user(db, user, user_agent)
+    tokens = await AuthService.create_tokens_for_user(db, user, user_agent)
     
     return tokens
 
 @router.post("/login", response_model=Token)
-def login(
+async def login(
     user_data: UserLogin,
     request: Request,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    user = AuthService.authenticate_user(db, user_data.email, user_data.password)
+    user = await AuthService.authenticate_user(db, user_data.email, user_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -60,45 +60,45 @@ def login(
         )
     
     user_agent = request.headers.get("user-agent")
-    tokens = AuthService.create_tokens_for_user(db, user, user_agent)
+    tokens = await AuthService.create_tokens_for_user(db, user, user_agent)
     
     return tokens
 
 @router.post("/refresh", response_model=Token)
-def refresh_token(
+async def refresh_token(
     token_data: TokenRefresh,
     request: Request,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     user_agent = request.headers.get("user-agent")
-    tokens = AuthService.refresh_tokens(db, token_data.refresh_token, user_agent)
+    tokens = await AuthService.refresh_tokens(db, token_data.refresh_token, user_agent)
     return tokens
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(
+async def logout(
     token_data: TokenRefresh,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    AuthService.logout(db, token_data.refresh_token)
+    await AuthService.logout(db, token_data.refresh_token)
 
 @router.get("/me", response_model=UserMe)
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.get("/sessions", response_model=List[RefreshSessionResponse])
-def get_my_sessions(
+async def get_my_sessions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    sessions = AuthService.get_user_sessions(db, current_user.id)
+    sessions = await AuthService.get_user_sessions(db, current_user.id)
     return sessions
 
 @router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)
-def logout_all_sessions(
+async def logout_all_sessions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    AuthService.logout_all_sessions(db, current_user.id)
+    await AuthService.logout_all_sessions(db, current_user.id)
 
 @router.get("/github/login")
 async def github_login():
@@ -108,7 +108,7 @@ async def github_login():
 @router.get("/github/callback", response_model=Token)
 async def github_callback(
     request: Request,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     try:
         with github_sso:
@@ -120,7 +120,7 @@ async def github_callback(
                 detail="GitHub authentication failed"
             )
         
-        user = AuthService.get_or_create_github_user(
+        user = await AuthService.get_or_create_github_user(
             db=db,
             github_id=str(user_data.id),
             email=user_data.email,
@@ -129,7 +129,7 @@ async def github_callback(
         )
         
         user_agent = request.headers.get("user-agent")
-        tokens = AuthService.create_tokens_for_user(db, user, user_agent)
+        tokens = await AuthService.create_tokens_for_user(db, user, user_agent)
         
         return tokens
     
