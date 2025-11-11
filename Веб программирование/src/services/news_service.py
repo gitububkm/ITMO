@@ -5,6 +5,7 @@ from src.models.user import User
 from src.schemas.news import NewsCreate, NewsUpdate
 from typing import List, Optional
 from src.services.cache import SyncCacheService
+from src.tasks.notifications import notify_new_news
 
 class NewsService:
     def __init__(self, db: AsyncSession) -> None:
@@ -20,6 +21,13 @@ class NewsService:
         self.db.add(db_news)
         await self.db.commit()
         await self.db.refresh(db_news)
+        # Отправляем фоновые уведомления о новой новости (моковые email)
+        try:
+            notify_new_news.delay(db_news.id)
+        except Exception as exc:
+            # Не блокируем основной поток, если брокер недоступен
+            import logging
+            logging.getLogger(__name__).error("notify_new_news_enqueue_failed id=%s err=%s", db_news.id, exc)
         # Инвалидация списков новостей: достаточно не делать ничего — TTL очистит. При желании можно чистить ключи по шаблону.
         return db_news
 

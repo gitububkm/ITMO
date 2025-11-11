@@ -359,6 +359,56 @@ curl -X DELETE "http://localhost:8000/news/1"
 - Postman или аналогичные инструменты
 - curl команды (примеры выше)
 
+## Фоновые уведомления (Celery)
+
+Добавлено мок-уведомление пользователей о новых новостях и еженедельный дайджест (в лог-файл вместо email) на Celery + Redis.
+
+### Переменные окружения (опционально)
+
+```
+# Брокер и бэкенд Celery (по умолчанию redis://localhost:6379/{1,2})
+CELERY_BROKER_URL=redis://localhost:6379/1
+CELERY_RESULT_BACKEND=redis://localhost:6379/2
+REDIS_URL=redis://localhost:6379
+CELERY_TIMEZONE=Europe/Moscow
+```
+
+### Запуск инфраструктуры
+
+- Redis (если не установлен):
+  - Docker: `docker run -p 6379:6379 --name redis -d redis:7`
+
+### Запуск приложения и воркеров
+
+1) Приложение API:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+2) Celery worker:
+
+```bash
+# Windows: обязательно одиночный пул
+celery -A src.celery_app.celery_app worker -P solo -l info
+
+# Linux/Mac:
+# celery -A src.celery_app.celery_app worker -l info
+```
+
+3) Celery beat (расписание еженедельного дайджеста по воскресеньям 09:00):
+
+```bash
+celery -A src.celery_app.celery_app beat -l info
+```
+
+### Как это работает
+
+- При создании новости через `POST /news/` ставится задача `notify_new_news(news_id)`.
+- Каждое воскресенье в 09:00 запускается `send_weekly_digest()`.
+- Оба задания логируют «отправленные письма» в файл `logs/notifications.log`.
+- Настроены ретраи с backoff и идемпотентность через Redis-ключи.
+
 ## Автор
 
 Бардышев А.А.
