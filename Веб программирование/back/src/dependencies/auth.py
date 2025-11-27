@@ -1,17 +1,58 @@
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models.user import User, UserRole
-from src.models.news import News
 from src.models.comment import Comment
+from src.models.news import News
+from src.models.user import User, UserRole
 from src.services.auth_service import AuthService
 from src.services.cache import SyncCacheService
 
 security = HTTPBearer()
+
+
+@dataclass(frozen=True)
+class UserContext:
+    id: int
+    name: str
+    email: str
+    role: UserRole
+    is_verified_author: bool
+    avatar: Optional[str]
+    registration_date: datetime
+
+
+def _context_from_user(user: User) -> UserContext:
+    return UserContext(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        is_verified_author=user.is_verified_author,
+        avatar=user.avatar,
+        registration_date=user.registration_date,
+    )
+
+
+def _context_from_cache(payload: dict) -> UserContext:
+    registration_date = payload.get("registration_date")
+    return UserContext(
+        id=payload["id"],
+        name=payload.get("name"),
+        email=payload["email"],
+        role=UserRole(payload["role"]),
+        is_verified_author=payload["is_verified_author"],
+        avatar=payload.get("avatar"),
+        registration_date=datetime.fromisoformat(registration_date)
+        if registration_date
+        else datetime.utcnow(),
+    )
 
 
 def _cache_user_safe(user: User) -> dict:
@@ -19,17 +60,19 @@ def _cache_user_safe(user: User) -> dict:
         "id": user.id,
         "name": user.name,
         "email": user.email,
-        "role": user.role,
+        "role": user.role.value,
         "is_verified_author": user.is_verified_author,
         "avatar": user.avatar,
-        "registration_date": user.registration_date,
+        "registration_date": user.registration_date.isoformat()
+        if user.registration_date
+        else None,
     }
 
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db)
-) -> User:
+) -> UserContext:
     token = credentials.credentials
     payload = AuthService.decode_token(token)
     
@@ -45,10 +88,7 @@ async def get_current_user(
     cache = SyncCacheService()
     cached = cache.get_user(int(user_id))
     if cached:
-        result = await db.execute(select(User).where(User.id == int(user_id)))
-        user = result.scalar_one_or_none()
-        if user:
-            return user
+        return _context_from_cache(cached)
     
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
@@ -58,14 +98,13 @@ async def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Прокешируем безопасные данные
     cache.set_user(user.id, _cache_user_safe(user))
-    return user
+    return _context_from_user(user)
 
 
 def get_current_verified_author(
-    current_user: User = Depends(get_current_user)
-) -> User:
+    current_user: UserContext = Depends(get_current_user)
+) -> UserContext:
     if not current_user.is_verified_author and current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -75,8 +114,8 @@ def get_current_verified_author(
 
 
 def get_current_admin(
-    current_user: User = Depends(get_current_user)
-) -> User:
+    current_user: UserContext = Depends(get_current_user)
+) -> UserContext:
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -87,7 +126,7 @@ def get_current_admin(
 
 async def get_news_with_permission(
     news_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> News:
     result = await db.execute(select(News).where(News.id == news_id))
@@ -112,7 +151,7 @@ async def get_news_with_permission(
 
 async def get_comment_with_permission(
     comment_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Comment:
     result = await db.execute(select(Comment).where(Comment.id == comment_id))
@@ -138,7 +177,7 @@ async def get_comment_with_permission(
 async def get_optional_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
-) -> Optional[User]:
+) -> Optional[UserContext]:
     if not credentials:
         return None
     
@@ -154,14 +193,13 @@ async def get_optional_current_user(
         cache = SyncCacheService()
         cached = cache.get_user(int(user_id))
         if cached:
-            result = await db.execute(select(User).where(User.id == int(user_id)))
-            user = result.scalar_one_or_none()
-            return user
+            return _context_from_cache(cached)
         result = await db.execute(select(User).where(User.id == int(user_id)))
         user = result.scalar_one_or_none()
         if user:
             cache.set_user(user.id, _cache_user_safe(user))
-        return user
+            return _context_from_user(user)
+        return None
     except:
         return None
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional
 import os
 import redis
 
@@ -77,3 +77,35 @@ class SyncCacheService:
 
     def delete_session(self, user_id: int, token_prefix: str) -> bool:
         return self.delete(f"session:{user_id}:{token_prefix}")
+
+    def list_sessions(self, user_id: int) -> List[dict]:
+        pattern = f"session:{user_id}:*"
+        try:
+            keys = list(self.client.scan_iter(match=pattern))
+            if not keys:
+                return []
+            values = self.client.mget(keys)
+            sessions: List[dict] = []
+            for key, raw in zip(keys, values):
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                token_prefix = key.split(":")[-1]
+                sessions.append({**data, "token_prefix": token_prefix})
+            return sessions
+        except Exception as exc:
+            logger.error(f"cache_list_sessions_error user_id={user_id} err={exc}")
+            return []
+
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        pattern = f"session:{user_id}:*"
+        try:
+            keys = list(self.client.scan_iter(match=pattern))
+            if not keys:
+                return 0
+            deleted = self.client.delete(*keys)
+            logger.info(f"cache_del_sessions user_id={user_id} count={deleted}")
+            return int(deleted or 0)
+        except Exception as exc:
+            logger.error(f"cache_del_sessions_error user_id={user_id} err={exc}")
+            return 0

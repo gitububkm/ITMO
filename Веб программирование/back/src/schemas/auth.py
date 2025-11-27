@@ -21,13 +21,9 @@ class TokenRefresh(BaseModel):
     refresh_token: str
 
 class RefreshSessionResponse(BaseModel):
-    id: int
+    token_prefix: str
     user_agent: Optional[str]
     created_at: datetime
-    expires_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class UserMe(BaseModel):
     id: int

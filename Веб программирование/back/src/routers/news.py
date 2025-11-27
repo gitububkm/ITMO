@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from src.schemas.news import NewsCreate, NewsUpdate, NewsResponse
 from src.services.news_service import NewsService
 from src.dependencies.auth import (
+    UserContext,
     get_current_verified_author,
     get_news_with_permission,
-    get_optional_current_user
+    get_optional_current_user,
 )
-from src.models.user import User
 from src.models.news import News
 from typing import List
 
@@ -21,7 +21,7 @@ def get_news_service(db: AsyncSession = Depends(get_db)) -> NewsService:
 @router.post("/", response_model=NewsResponse, status_code=201)
 async def create_news(
     news: NewsCreate,
-    current_user: User = Depends(get_current_verified_author),
+    current_user: UserContext = Depends(get_current_verified_author),
     service: NewsService = Depends(get_news_service)
 ):
     news.author_id = current_user.id
@@ -34,7 +34,7 @@ async def create_news(
 async def get_all_news(
     skip: int = 0,
     limit: int = 100,
-    current_user: User = Depends(get_optional_current_user),
+    _current_user: UserContext | None = Depends(get_optional_current_user),
     service: NewsService = Depends(get_news_service)
 ):
     return await service.list(skip, limit)
@@ -42,7 +42,7 @@ async def get_all_news(
 @router.get("/{news_id}", response_model=NewsResponse)
 async def get_news(
     news_id: int,
-    current_user: User = Depends(get_optional_current_user),
+    _current_user: UserContext | None = Depends(get_optional_current_user),
     service: NewsService = Depends(get_news_service)
 ):
     news = await service.get(news_id)

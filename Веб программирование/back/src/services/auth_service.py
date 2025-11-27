@@ -1,13 +1,15 @@
 from datetime import datetime, timedelta
-from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from fastapi import HTTPException, status
+from typing import List, Optional
 import os
 
+from fastapi import HTTPException, status
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.models.user import User, UserRole
+from src.schemas.auth import UserLogin, UserRegister
 from src.services.cache import SyncCacheService
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
@@ -158,14 +160,14 @@ class AuthService:
             return False
 
     @staticmethod
-    async def get_user_sessions(db: AsyncSession, user_id: int):
-        # Не реализовано — для Redis требуется отдельный трекинг ключей
-        return []
+    async def get_user_sessions(db: AsyncSession, user_id: int) -> List[dict]:
+        cache = SyncCacheService()
+        return cache.list_sessions(user_id)
 
     @staticmethod
     async def logout_all_sessions(db: AsyncSession, user_id: int) -> int:
-        # Можно реализовать через хранение списка префиксов на пользователя
-        return 0
+        cache = SyncCacheService()
+        return cache.delete_sessions_for_user(user_id)
 
     @staticmethod
     async def get_or_create_github_user(db: AsyncSession, github_id: str, email: str, name: str, avatar: str) -> User:
@@ -196,4 +198,53 @@ class AuthService:
         await db.commit()
         await db.refresh(user)
         return user
+
+
+class AuthApplicationService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def register(self, payload: UserRegister, user_agent: Optional[str]) -> dict:
+        user = await AuthService.register_user(self.db, payload.name, payload.email, payload.password)
+        return await AuthService.create_tokens_for_user(self.db, user, user_agent)
+
+    async def login(self, payload: UserLogin, user_agent: Optional[str]) -> dict:
+        user = await AuthService.authenticate_user(self.db, payload.email, payload.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await AuthService.create_tokens_for_user(self.db, user, user_agent)
+
+    async def refresh(self, refresh_token: str, user_agent: Optional[str]) -> dict:
+        return await AuthService.refresh_tokens(self.db, refresh_token, user_agent)
+
+    async def logout(self, refresh_token: str) -> None:
+        await AuthService.logout(self.db, refresh_token)
+
+    async def list_sessions(self, user_id: int) -> List[dict]:
+        return await AuthService.get_user_sessions(self.db, user_id)
+
+    async def logout_all_sessions(self, user_id: int) -> int:
+        return await AuthService.logout_all_sessions(self.db, user_id)
+
+    async def tokens_for_github_user(
+        self,
+        *,
+        github_id: str,
+        email: str,
+        name: str,
+        avatar: str,
+        user_agent: Optional[str],
+    ) -> dict:
+        user = await AuthService.get_or_create_github_user(
+            db=self.db,
+            github_id=github_id,
+            email=email,
+            name=name,
+            avatar=avatar,
+        )
+        return await AuthService.create_tokens_for_user(self.db, user, user_agent)
 
