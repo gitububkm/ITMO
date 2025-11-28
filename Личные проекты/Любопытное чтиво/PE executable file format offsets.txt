@@ -1,0 +1,177 @@
+Exe file format with offsets rather than explanations 
+
+I created this because I couldn't find any straight forward guides to the PE 
+executable format. There are plenty of explanations of all the fields in plenty 
+of documents but I couldn't find a no nonsense listing of the offsets of the 
+data. While there is a lot of data and various parts of the structure are at 
+varying positions there are still a lot of useful fixed and relative offsets 
+that will help when dissassembling/examining PE files. I've only included the 
+parts that I have considered simple enough to understand when perusing the 
+executable with a text editor, for this reason I haven't included resource 
+information and the such like - there are perfectly good tools out there to 
+manipulate that. 
+
+It was cobbled together from the following sources, 
+
+winnt.h 
+
+Peering Inside the PE: A Tour of the Win32 Portable Executable File Format
+Matt Pietrek
+March 1994 
+
+The Portable Executable File Format from Top to Bottom
+Randy Kath
+Microsoft Developer Network Technology Group 
+
+Feel free to send comments/suggestions/errors etc. to me at the 
+ImmortalDescendants 
+
+OLD EXE (MZ header)
+
++0  WORD e_magic;         // Magic number MZ
+ 2  WORD e_cblp;          // Bytes on last page of file
+ 4  WORD e_cp;            // Pages in file
+ 6  WORD e_crlc;          // Relocations
+ 8  WORD e_cparhdr;       // Size of header in paragraphs
+ A  WORD e_minalloc;      // Minimum extra paragraphs needed
+ C  WORD e_maxalloc;      // Maximum extra paragraphs needed
+ E  WORD e_ss;            // Initial (relative) SS value
+10  WORD e_sp;            // Initial SP value
+12  WORD e_csum;          // Checksum
+14  WORD e_ip;            // Initial IP value
+16  WORD e_cs;            // Initial (relative) CS value
+18  WORD e_lfarlc;        // File address of relocation table
+1A  WORD e_ovno;          // Overlay number
+1C  WORD e_res[4];        // Reserved words
+24  WORD e_oemid;         // OEM identifier (for e_oeminfo)
+26  WORD e_oeminfo;       // OEM information; e_oemid specific
+28  WORD e_res2[10];      // Reserved words
+3C  DWORD e_lfanew;       // File address of new exe header
+ :
+ :
+ \/
+NEW EXE
++0 PE
+ 4 WORD  Machine;
+ 6 WORD  NumberOfSections;    
+ 8 DWORD   TimeDateStamp;
+ C DWORD   PointerToSymbolTable;    
+10 DWORD   NumberOfSymbols;
+14 WORD  SizeOfOptionalHeader;    
+16 WORD  Characteristics;
+
+18 Optional Header
+
+18 WORD    Magic;    
+1a UCHAR   MajorLinkerVersion;    
+1b UCHAR   MinorLinkerVersion;
+1c DWORD   SizeOfCode;    
+20 DWORD   SizeOfInitializedData;
+24 DWORD   SizeOfUninitializedData;    
+28 DWORD   AddressOfEntryPoint;
+2c DWORD   BaseOfCode;    
+30 DWORD   BaseOfData;    //    // NT additional fields.
+   //    
+34 DWORD   ImageBase;    
+38 DWORD   SectionAlignment;
+3c DWORD   FileAlignment;    
+40 WORD    MajorOperatingSystemVersion;
+42 WORD    MinorOperatingSystemVersion;    
+44 WORD    MajorImageVersion;
+46 WORD    MinorImageVersion;    
+48 WORD    MajorSubsystemVersion;
+4a WORD    MinorSubsystemVersion;    
+4c DWORD   Reserved1;    
+50 DWORD   SizeOfImage;
+54 DWORD   SizeOfHeaders;    
+58 DWORD   CheckSum;    
+5c WORD    Subsystem;
+5e WORD    DllCharacteristics;    
+60 DWORD   SizeOfStackReserve;
+64 DWORD   SizeOfStackCommit;    
+68 DWORD   SizeOfHeapReserve;
+6c DWORD   SizeOfHeapCommit;    
+70 DWORD   LoaderFlags;
+74 DWORD   NumberOfRvaAndSizes;
+
+   IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+   /* IMAGE_NUMBEROF_DIRECTORY_ENTRIES = 16 */
+
+78 DWORD ExportDirectory VA
+7c DWORD ExportDirectory Size
+80 DWORD ImportDirectory VA
+84 DWORD ImportDirectory Size
+88 DWORD ResourceDirectory VA
+8c DWORD ResourceDirectory Size
+90 DWORD ExceptionDirectory VA
+94 DWORD ExceptionDirectory Size
+98 DWORD SecurityDirectory VA
+9c DWORD SecurityDirectory Size
+a0 DWORD BaseRelocationTable VA
+a4 DWORD BaseRelocationTable Size
+a8 DWORD DebugDirectory VA
+ac DWORD DebugDirectory Size
+b0 DWORD ArchitectureSpecificData VA
+b4 DWORD ArchitectureSpecificData Size
+b8 DWORD RVAofGP VA
+bc DWORD RVAofGP Size
+c0 DWORD TLSDirectory VA
+c4 DWORD TLSDirectory Size
+c8 DWORD LoadConfigurationDirectory VA
+cc DWORD LoadConfigurationDirectory Size
+d0 DWORD BoundImportDirectoryinheaders VA
+d4 DWORD BoundImportDirectoryinheaders Size
+d8 DWORD ImportAddressTable VA
+dc DWORD ImportAddressTable Size
+e0 DWORD DelayLoadImportDescriptors VA
+e4 DWORD DelayLoadImportDescriptors Size
+e8 DWORD COMRuntimedescriptor VA
+ec DWORD COMRuntimedescriptor Size
+f0 DWORD 0
+f4 DWORD 0
+
+SectionHeaders
+   first starts straight after the 'optional' header
+   at +f8h, this is an array so they just keep coming ;)
+
++0 8byte ANSI name 
++8 dword misc (actual size)
++C dword virtual address (an rva to where it should bee mapped)
+10 dword sizeofrawdata 
+14 dword pointerToRawData (file based offset)
+18 dword pointerToRelocations
+1C dword PointerToLinenumbers
+20 word NumberOfRelocations
+22 word NumberOfLineNumbers
+24 dword Characteristics
+   - some of the flags in this are ;-
+   0x00000020 contains code
+   0x00000040 contains initialized data
+   0x00000080 contains uninitialized data
+   0x00000200 contains comments
+   0x02000000 can be discarded
+   0x10000000 This section is shareable. 
+   0x20000000 This section is executable. 
+   0x40000000 This section is readable. 
+   0x80000000 The section is writeable. 
+
+Export Directory
++0 DWORD   Characteristics;
+4  DWORD   TimeDateStamp;
+8  WORD    MajorVersion;
+a  WORD    MinorVersion;
+c  DWORD   Name;
+10 DWORD   Base;
+14 DWORD   NumberOfFunctions;
+18 DWORD   NumberOfNames;
+1c DWORD   *AddressOfFunctions;
+20 DWORD   *AddressOfNames;
+24 DWORD   *AddressOfNameOrdinals;
+
+Import Directory
++0 DWORD   OriginalFirstThunk;
+ 4 DWORD   TimeDateStamp;
+ 8 DWORD   ForwarderChain;
+ c DWORD   Name;
+10 DWORD   FirstThunk;
+
