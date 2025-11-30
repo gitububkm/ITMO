@@ -1,7 +1,0 @@
-
-flask
-sqlalchemy
-psycopg2-binary
-flask-login
-python-dotenv
-passlib[bcrypt]
