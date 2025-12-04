@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="[https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/ITMO_University_logo.svg/200px-ITMO_University_logo.svg.png](https://pbd.space/wp-content/uploads/2019/03/%D0%B8%D1%82%D0%BC%D0%BE.png)" alt="ITMO University Logo" width="120" height="120" style="vertical-align: middle; margin-right: 20px;"/>
+<img src="https://pbd.space/wp-content/uploads/2019/03/%D0%B8%D1%82%D0%BC%D0%BE.png" alt="ITMO University Logo" width="120" height="120" style="vertical-align: middle; margin-right: 20px;"/>
 
 # ITMO
 
