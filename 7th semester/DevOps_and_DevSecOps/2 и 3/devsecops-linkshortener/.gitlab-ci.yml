@@ -1,0 +1,131 @@
+stages:
+  - linter
+  - build
+  - sast
+  - tests
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+cache:
+  key:
+    files:
+      - backend/poetry.lock
+  paths:
+    - .cache/pypoetry/
+    - backend/.venv/
+  policy: pull-push
+
+.python-base:
+  image: localhost:5050/n3446-ame/devsecops-news-api/python-docker-ci:3.13
+  before_script:
+    - poetry config cache-dir "$CI_PROJECT_DIR/.cache/pypoetry"
+
+.checker:
+  before_script:
+    - |
+      wait_for_service() {
+        attempts=$1
+        url=$2
+        echo "Waiting for $url..."
+        while true; do
+          if curl -fsS "$url" > /dev/null; then
+            echo "Service $url is ready"
+            break
+          fi
+          if [ "$attempts" -le 0 ]; then
+            echo "Timeout: service $url did not become ready"
+            exit 1
+          fi
+          echo "Attempts left: $attempts. Sleeping 5s..."
+          sleep 5
+          attempts=$((attempts - 1))
+        done
+      }
+
+linter:
+  extends: .python-base
+  stage: linter
+  script:
+    - cd backend
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
+    - cd ..
+    - pre-commit run --all-files
+
+build:
+  extends: .python-base
+  stage: build
+  needs:
+    - linter
+  script:
+    - cp .env.example .env
+    - docker compose build
+
+# SAST: SonarQube Community Build on the GitLab host (settings: sonar-project.properties).
+# Runs after build and before deploy; fails when the project's quality gate fails (vulnerabilities / unreviewed hotspots).
+# CI/CD variables: SONAR_TOKEN (masked) is required, SONAR_HOST_URL is optional.
+sast:
+  extends: .python-base
+  stage: sast
+  needs:
+    - build
+  cache:
+    key: sast-pysonar
+    paths:
+      - .cache/pip/
+      - .sonar/cache/
+    when: always
+  variables:
+    SONAR_HOST_URL: "http://host.docker.internal:9000"
+    SONAR_USER_HOME: "$CI_PROJECT_DIR/.sonar"
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    # Full history for SCM blame data in SonarQube
+    GIT_DEPTH: "0"
+  before_script:
+    - test -n "$SONAR_TOKEN" || { echo "SONAR_TOKEN CI/CD variable is not set"; exit 1; }
+    - python -m venv /tmp/pysonar
+    - /tmp/pysonar/bin/pip install --quiet "pysonar==1.9.0.5762"
+  script:
+    - /tmp/pysonar/bin/pysonar --sonar-host-url="$SONAR_HOST_URL" --sonar-token="$SONAR_TOKEN"
+
+tests:
+  extends: .python-base
+  stage: tests
+  needs:
+    - build
+  script:
+    - cp .env.example .env
+    - docker compose up -d
+    - cd backend
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
+    - cd ..
+    - !reference [.checker, before_script]
+    - wait_for_service 24 "http://host.docker.internal:8000/health"
+    - cd backend
+    - set -a && source ../.env && set +a
+    - export DATABASE_URL="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5432/${POSTGRES_DB}"
+    - export SYNC_DATABASE_URL="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5432/${POSTGRES_DB}"
+    - export REDIS_HOST="host.docker.internal"
+    - export REDIS_PORT="6379"
+    - export CELERY_BROKER_URL="redis://host.docker.internal:6379/1"
+    - export CELERY_RESULT_BACKEND="redis://host.docker.internal:6379/2"
+    - export BASE_URL="http://host.docker.internal:8000"
+    - poetry run pytest
+  after_script:
+    - docker compose ps || true
+    - |
+      if [ "$CI_JOB_STATUS" != "success" ]; then
+        docker compose logs || true
+      fi
+    - docker compose down -v || true
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # Avoid duplicate branch + MR pipelines when an MR is open
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never

@@ -1,0 +1,193 @@
+stages:
+  - build
+  - test
+  - sast
+  - upload
+  - deploy
+
+variables:
+  # The runner shares the host Docker daemon, so images built here are visible to later jobs
+  APP_IMAGE: "pygoat:$CI_COMMIT_SHORT_SHA"
+  APP_CONTAINER: "pygoat"
+  APP_PORT: "3000"
+
+default:
+  image: localhost:5050/n3446-ame/devsecops-news-api/python-docker-ci:3.13
+
+.checker:
+  before_script:
+    - |
+      wait_for_service() {
+        attempts=$1
+        url=$2
+        echo "Waiting for $url..."
+        while true; do
+          if curl -fsS -o /dev/null "$url"; then
+            echo "Service $url is ready"
+            break
+          fi
+          if [ "$attempts" -le 0 ]; then
+            echo "Timeout: service $url did not become ready"
+            exit 1
+          fi
+          echo "Attempts left: $attempts. Sleeping 5s..."
+          sleep 5
+          attempts=$((attempts - 1))
+        done
+      }
+
+build:
+  stage: build
+  script:
+    - docker build --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" -t "$APP_IMAGE" .
+    - docker image ls "$APP_IMAGE"
+
+# Django smoke tests run inside the image that will be deployed
+tests:
+  stage: test
+  needs:
+    - build
+  script:
+    - docker run --rm "$APP_IMAGE" python manage.py test tests --verbosity 2
+
+# SAST: Opengrep with the rules from .opengrep/rules (see .opengrep/README.md).
+# Runs after build and before deploy. Findings do not fail the job: the JSON report
+# is the result, it is kept as an artifact.
+sast:
+  stage: sast
+  needs:
+    - build
+  variables:
+    OPENGREP_VERSION: "v1.32.0"
+    OPENGREP_SHA256: "7360d60174880bd9214f2dfbe439b7bce82b7a3d44cfe945ba833c85cc8bda75"
+    OPENGREP_BIN: "$CI_PROJECT_DIR/.cache/opengrep/opengrep-$OPENGREP_VERSION"
+    OPENGREP_REPORT: "opengrep-report.json"
+  cache:
+    key: "opengrep-$OPENGREP_VERSION"
+    paths:
+      - .cache/opengrep/
+    when: always
+  before_script:
+    - |
+      if [ ! -x "$OPENGREP_BIN" ]; then
+        mkdir -p "$(dirname "$OPENGREP_BIN")"
+        curl -fsSL -o "$OPENGREP_BIN" \
+          "https://github.com/opengrep/opengrep/releases/download/$OPENGREP_VERSION/opengrep_manylinux_x86"
+      fi
+    - echo "$OPENGREP_SHA256  $OPENGREP_BIN" | sha256sum -c -
+    - chmod +x "$OPENGREP_BIN"
+    - '"$OPENGREP_BIN" --version'
+  script:
+    - >
+      "$OPENGREP_BIN" scan
+      --config .opengrep/rules
+      --exclude Solutions --exclude docs --exclude tests --exclude .opengrep --exclude .cache
+      --json --output "$OPENGREP_REPORT"
+      .
+    - |
+      python3 - "$OPENGREP_REPORT" <<'PY'
+      import collections, json, sys
+      report = json.load(open(sys.argv[1]))
+      results = report["results"]
+      print(f"Opengrep: {len(results)} findings, {len(report['errors'])} errors")
+      for severity, count in collections.Counter(r["extra"]["severity"] for r in results).most_common():
+          print(f"  {severity:8} {count}")
+      for r in sorted(results, key=lambda r: (r["path"], r["start"]["line"])):
+          if r["extra"]["severity"] == "ERROR":
+              print(f"  ERROR {r['path']}:{r['start']['line']}  {r['check_id'].rsplit('.', 1)[-1]}")
+      PY
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - "$OPENGREP_REPORT"
+
+# Send the Opengrep JSON report to DefectDojo (product PyGoat, engagement "GitLab CI/CD").
+# Reimport into the same test "Opengrep SAST": new findings are added, findings missing from
+# the report are closed as mitigated, triage (verified / false positive, notes) and history are kept.
+# The first report of the engagement was sent with import-scan (pipeline #100, test #1).
+# Only from main, so merge request pipelines do not touch DefectDojo.
+# CI/CD variable DEFECTDOJO_API_KEY (masked, protected): API key of the DefectDojo user gitlab-ci.
+defectdojo:
+  stage: upload
+  needs:
+    - job: sast
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  variables:
+    DEFECTDOJO_URL: "http://host.docker.internal:8081"
+    DD_PRODUCT: "PyGoat"
+    DD_ENGAGEMENT: "GitLab CI/CD"
+    DD_TEST_TITLE: "Opengrep SAST"
+    # DefectDojo has no separate Opengrep parser; the report format is Semgrep-compatible
+    DD_SCAN_TYPE: "Semgrep JSON Report"
+    OPENGREP_REPORT: "opengrep-report.json"
+  script:
+    - test -n "$DEFECTDOJO_API_KEY" || { echo "DEFECTDOJO_API_KEY CI/CD variable is not set"; exit 1; }
+    - >
+      curl -sS --fail-with-body -o dd-response.json
+      -H "Authorization: Token $DEFECTDOJO_API_KEY"
+      -F "scan_type=$DD_SCAN_TYPE"
+      -F "product_name=$DD_PRODUCT"
+      -F "engagement_name=$DD_ENGAGEMENT"
+      -F "test_title=$DD_TEST_TITLE"
+      -F "file=@$OPENGREP_REPORT"
+      -F "scan_date=$(date +%F)"
+      -F "minimum_severity=Info"
+      -F "active=true"
+      -F "verified=false"
+      -F "close_old_findings=true"
+      -F "do_not_reactivate=false"
+      -F "commit_hash=$CI_COMMIT_SHA"
+      -F "branch_tag=$CI_COMMIT_BRANCH"
+      -F "build_id=$CI_PIPELINE_ID"
+      -F "version=$CI_COMMIT_SHORT_SHA"
+      "$DEFECTDOJO_URL/api/v2/reimport-scan/"
+      || { cat dd-response.json; exit 1; }
+    - |
+      python3 - dd-response.json <<'PY'
+      import json, sys
+      r = json.load(open(sys.argv[1]))
+      print(f"DefectDojo: product_id={r.get('product_id')} engagement_id={r.get('engagement_id')} test_id={r.get('test_id')}")
+      stats = r.get("statistics") or {}
+      delta = stats.get("delta") or {}
+      for change, by_severity in delta.items():
+          print(f"  {change:12} {json.dumps((by_severity or {}).get('total', {}))}")
+      after = stats.get("after") or {}
+      for severity in ("critical", "high", "medium", "low", "info", "total"):
+          print(f"  {severity:8} active={after.get(severity, {}).get('active', 0)} verified={after.get(severity, {}).get('verified', 0)} false_p={after.get(severity, {}).get('false_p', 0)}")
+      PY
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - dd-response.json
+
+deploy:
+  stage: deploy
+  needs:
+    - tests
+    - sast
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  environment:
+    name: production
+    url: http://ame-gitlab:3000
+  script:
+    - docker rm -f "$APP_CONTAINER" || true
+    # Deliberately vulnerable app: no docker.sock or host mounts, only the published port
+    - docker run -d --name "$APP_CONTAINER" --restart unless-stopped -p "$APP_PORT:8000" "$APP_IMAGE"
+    - docker tag "$APP_IMAGE" pygoat:latest
+    - !reference [.checker, before_script]
+    - wait_for_service 12 "http://host.docker.internal:$APP_PORT/login/"
+    - docker ps --filter "name=^${APP_CONTAINER}$"
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # Avoid duplicate branch + MR pipelines when an MR is open
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never

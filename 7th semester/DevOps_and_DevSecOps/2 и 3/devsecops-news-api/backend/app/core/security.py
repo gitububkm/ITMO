@@ -1,0 +1,41 @@
+import secrets
+from datetime import UTC, datetime, timedelta
+
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerificationError, VerifyMismatchError
+
+from app.core.config import settings
+
+ph = PasswordHasher()
+
+
+def hash_password(password: str) -> str:
+    """Хеширует пароль с использованием Argon2."""
+    return ph.hash(password)
+
+
+def verify_password(hashed_password: str, plain_password: str) -> bool:
+    """Сравнение хеша."""
+    try:
+        return ph.verify(hashed_password, plain_password)
+    except (VerifyMismatchError, VerificationError):
+        return False
+
+
+def create_access_token(
+    subject: str,
+    expires_delta: timedelta | None = None,
+) -> str:
+    """JWT access token."""
+    if expires_delta:
+        expire = datetime.now(UTC) + expires_delta
+    else:
+        expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"exp": expire, "sub": subject}
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def create_refresh_token() -> str:
+    """Генерирует безопасный случайный токен."""
+    return secrets.token_hex(32)

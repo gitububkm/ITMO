@@ -1,0 +1,67 @@
+# Full Stack Новостной портал
+
+### 1. ЗАПУСК ПРОЕКТА
+
+**Требования:**
+- Python 3.13+
+- Poetry (рекомендуется установка `pipx install poetry==2.4.3`)
+- Docker & Docker Compose
+- Node.js 24+ (LTS)
+
+**Шаги для запуска:**
+
+1.  Клонировать репозиторий:
+    ```bash
+    git clone https://github.com/JKL2theBest/devsecops-news-api.git
+    cd devsecops-news-api
+    ```
+2. Создать `.env` файл в корне проекта, используя шаблон `.env.example`:
+    ```bash
+    cp .env.example .env
+    ```
+3. Установить зависимости (для бэкенда):
+    ```bash
+    cd backend
+    poetry config virtualenvs.in-project true
+    poetry env use 3.13
+    poetry install
+   ```
+    3.1. Для установки зависимостей разработки (тесты, линтеры, форматтеры) используйте:
+    ```bash
+    poetry install --with dev
+    ```
+    3.2. Далее для автоматической проверки линтером при каждом коммите в корне проекта (`cd ../`) запустите:
+    ```bash
+    pipx install pre-commit
+    pre-commit install
+    ```
+   Запуск автоматической проверки всех файлов проекта:
+    ```bash
+    pre-commit run --all-files
+   ```
+    > **Важно:** При внесении правок в `backend/pyproject.toml` или `.pre-commit-config.yaml` обязательно запускайте `pre-commit clean`, чтобы обновить кэш инструментов анализа.
+4. Запуск проекта:
+    ```bash
+    docker compose --profile monitoring up -d --build
+    ```
+5. Перед запуском тестов убедиться, что установлен браузер `playwright` (из папки `backend` (`cd backend`)):
+    ```bash
+    poetry run playwright install
+    ```
+6. Запуск тестов:
+    ```bash
+    poetry run pytest
+    ```
+
+Подробные инструкции по тестированию и демонстрации функционала можно найти в [документации проекта](./backend/README.md)
+и отдельно про фронтенд [здесь](./frontend/README.md).
+
+### 2. SAST (SonarQube)
+
+В GitLab CI после стадии `build` выполняется джоба `sast`: код анализируется на сервере SonarQube Community Build
+(`http://ame-gitlab:9000`, проект `devsecops-news-api`). Если проект не проходит Quality Gate
+(есть уязвимости или непросмотренные security hotspots), джоба падает.
+
+- Настройки анализа: `sonar-project.properties`.
+- CI/CD переменные (Settings → CI/CD → Variables): `SONAR_TOKEN` (Masked, без Protect) — обязательна;
+  `SONAR_HOST_URL` — опциональна, по умолчанию `http://host.docker.internal:9000`.

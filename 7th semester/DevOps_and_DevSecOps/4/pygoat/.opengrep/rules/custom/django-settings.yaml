@@ -1,0 +1,35 @@
+# Project rules for Django settings: the opengrep-rules Django pack has no
+# checks for debug mode or a secret key committed to the repository.
+rules:
+  - id: django-debug-enabled
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Django runs with DEBUG = True. Debug mode shows stack traces, settings and
+      SQL queries to any visitor and must be disabled outside local development.
+    paths:
+      include:
+        - "**/settings.py"
+    pattern: DEBUG = True
+    metadata:
+      category: security
+      cwe: "CWE-489: Active Debug Code"
+      owasp: "A05:2021 - Security Misconfiguration"
+      confidence: HIGH
+
+  - id: django-hardcoded-secret-key
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Django SECRET_KEY is hardcoded in the source code. Anyone with access to the
+      repository can forge session cookies, password reset tokens and signed data.
+      Load it from an environment variable or a secret store instead.
+    paths:
+      include:
+        - "**/settings.py"
+    pattern: SECRET_KEY = "..."
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH

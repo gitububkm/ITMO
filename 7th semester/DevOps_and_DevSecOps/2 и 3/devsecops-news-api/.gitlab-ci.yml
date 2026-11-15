@@ -1,0 +1,143 @@
+stages:
+  - linter
+  - build
+  - sast
+  - tests
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PLAYWRIGHT_BROWSERS_PATH: "$CI_PROJECT_DIR/.cache/ms-playwright"
+
+cache:
+  key:
+    files:
+      - backend/poetry.lock
+  paths:
+    - .cache/pypoetry/
+    - .cache/ms-playwright/
+    - backend/.venv/
+  policy: pull-push
+
+.python-base:
+  image: localhost:5050/n3446-ame/devsecops-news-api/python-docker-ci:3.13
+  before_script:
+    - poetry config cache-dir "$CI_PROJECT_DIR/.cache/pypoetry"
+
+.checker:
+  before_script:
+    - |
+      wait_for_service() {
+        attempts=$1
+        url=$2
+        echo "Ожидание доступности $url..."
+        while true; do
+          if curl -fsS "$url" > /dev/null; then
+            echo "Сервис $url готов!"
+            break
+          fi
+          if [ "$attempts" -le 0 ]; then
+            echo "Выход по таймауту: сервис $url не поднялся"
+            exit 1
+          fi
+          echo "Осталось попыток: $attempts. Ждем 5 сек..."
+          sleep 5
+          attempts=$((attempts - 1))
+        done
+      }
+
+linter:
+  extends: .python-base
+  stage: linter
+  script:
+    - cd backend
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
+    - cd ..
+    - pre-commit run --all-files
+
+build:
+  extends: .python-base
+  stage: build
+  needs:
+    - linter
+  script:
+    - cp .env.example .env
+    - docker compose build
+
+# SAST: анализ SonarQube Community Build (настройки в sonar-project.properties).
+# Джоба падает, если проект не проходит Quality Gate (уязвимости / непросмотренные security hotspots).
+# CI/CD переменные: SONAR_TOKEN (masked, без protect) обязательна, SONAR_HOST_URL опциональна.
+sast:
+  extends: .python-base
+  stage: sast
+  needs:
+    - build
+  cache:
+    key: sast-pysonar
+    paths:
+      - .cache/pip/
+      - .sonar/cache/
+    when: always
+  variables:
+    SONAR_HOST_URL: "http://host.docker.internal:9000"
+    SONAR_USER_HOME: "$CI_PROJECT_DIR/.sonar"
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    GIT_DEPTH: "0"
+  before_script:
+    - test -n "$SONAR_TOKEN" || { echo "CI/CD переменная SONAR_TOKEN не задана"; exit 1; }
+    - python -m venv /tmp/pysonar
+    - /tmp/pysonar/bin/pip install --quiet "pysonar==1.9.0.5762"
+  script:
+    - /tmp/pysonar/bin/pysonar --sonar-host-url="$SONAR_HOST_URL" --sonar-token="$SONAR_TOKEN"
+
+tests:
+  extends: .python-base
+  stage: tests
+  needs:
+    - build
+  script:
+    - cp .env.example .env
+
+    - docker compose up -d
+
+    - cd backend
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
+    - poetry run playwright install --with-deps chromium
+    - cd ..
+
+    - !reference [.checker, before_script]
+    - wait_for_service 12 "http://host.docker.internal:5173"
+
+    - rm -rf backend/logs && mkdir -p backend/logs
+    - cd backend
+    - set -a && source ../.env && set +a
+
+    - export DATABASE_URL="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5432/${POSTGRES_DB}"
+    - export SYNC_DATABASE_URL="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5432/${POSTGRES_DB}"
+    - export REDIS_HOST="host.docker.internal"
+    - export REDIS_PORT="6379"
+    - export CELERY_BROKER_URL="redis://host.docker.internal:6379/1"
+    - export CELERY_RESULT_BACKEND="redis://host.docker.internal:6379/2"
+    - export PROMETHEUS_MULTIPROC_DIR="${CI_PROJECT_DIR}/backend/metrics"
+    - export FRONTEND_URL="http://host.docker.internal:5173"
+
+    - mkdir -p "${CI_PROJECT_DIR}/backend/metrics"
+
+    - poetry run pytest
+
+  after_script:
+    - docker compose ps || true
+    - |
+      if [ "$CI_JOB_STATUS" != "success" ]; then
+        docker compose logs || true
+      fi
+    - docker compose down -v || true
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - when: never
